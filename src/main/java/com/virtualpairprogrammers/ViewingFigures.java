@@ -17,20 +17,68 @@ import java.util.List;
 public class ViewingFigures {
     @SuppressWarnings("resource")
     public static void main(String[] args) {
-        System.setProperty("hadoop.home.dir", "c:/hadoop");
+//        System.setProperty("hadoop.home.dir", "c:/hadoop");
         Logger.getLogger("org.apache").setLevel(Level.WARN);
 
         SparkConf conf = new SparkConf().setAppName("startingSpark").setMaster("local[*]");
         JavaSparkContext sc = new JavaSparkContext(conf);
 
         // Use true to use hardcoded data identical to that in the PDF guide.
-        boolean testMode = true;
+        boolean testMode = false;
 
         JavaPairRDD<Integer, Integer> viewData = setUpViewDataRdd(sc, testMode);
         JavaPairRDD<Integer, Integer> chapterData = setUpChapterDataRdd(sc, testMode);
         JavaPairRDD<Integer, String> titlesData = setUpTitlesDataRdd(sc, testMode);
 
         // TODO - over to you!
+
+// Warmup
+        JavaPairRDD<Integer, Integer> chapterCountRdd = chapterData.mapToPair(row -> new Tuple2<Integer, Integer>(row._2, 1))
+                .reduceByKey((value1, value2) -> value1 + value2);
+
+        // Step 1 - remove any duplicated views
+        viewData = viewData.distinct();
+
+        // Step 2 - get the course Ids into the RDD
+        viewData = viewData.mapToPair(row -> new Tuple2<Integer, Integer>(row._2, row._1));
+        JavaPairRDD<Integer, Tuple2<Integer, Integer>> joinedRdd = viewData.join(chapterData);
+
+        // Step 3 - don't need chapterIds, setting up for a reduce
+        JavaPairRDD<Tuple2<Integer, Integer>, Long> step3 = joinedRdd.mapToPair(row -> {
+            Integer userId = row._2._1;
+            Integer courseId = row._2._2;
+            return new Tuple2<Tuple2<Integer, Integer>, Long>(new Tuple2<Integer, Integer>(userId, courseId), 1L);
+        });
+
+
+        // Step 4 - count how many views for each user per course
+        step3 = step3.reduceByKey((value1, value2) -> value1 + value2);
+
+        // step 5 - remove the userIds
+        JavaPairRDD<Integer, Long> step5 = step3.mapToPair(row -> new Tuple2<Integer, Long>(row._1._2, row._2));
+
+        // step 6 - add in the total chapter count
+        JavaPairRDD<Integer, Tuple2<Long, Integer>> step6 = step5.join(chapterCountRdd);
+
+        // step 7 - convert to percentage
+        JavaPairRDD<Integer, Double> step7 = step6.mapValues(value -> (double) value._1 / value._2);
+
+        // step 8 - convert to scores
+        JavaPairRDD<Integer, Long> step8 = step7.mapValues(value -> {
+            if (value > 0.9) return 10L;
+            if (value > 0.5) return 4L;
+            if (value > 0.25) return 2L;
+            return 0L;
+        });
+
+        // step 9
+        step8 = step8.reduceByKey((value1, value2) -> value1 + value2);
+
+        // step 10
+        JavaPairRDD<Integer, Tuple2<Long, String>> step10 = step8.join(titlesData);
+
+        JavaPairRDD<Long, String> step11 = step10.mapToPair(row -> new Tuple2<Long, String>(row._2._1, row._2._2));
+        step11.sortByKey(false).collect().forEach(System.out::println);
 
         sc.close();
     }
@@ -48,7 +96,7 @@ public class ViewingFigures {
         return sc.textFile("src/main/resources/viewing figures/titles.csv")
                 .mapToPair(commaSeparatedLine -> {
                     String[] cols = commaSeparatedLine.split(",");
-                    return new Tuple2<Integer, String>(new Integer(cols[0]), cols[1]);
+                    return new Tuple2<Integer, String>(Integer.valueOf(cols[0]), cols[1]);
                 });
     }
 
@@ -77,7 +125,7 @@ public class ViewingFigures {
         return sc.textFile("src/main/resources/viewing figures/chapters.csv")
                 .mapToPair(commaSeparatedLine -> {
                     String[] cols = commaSeparatedLine.split(",");
-                    return new Tuple2<Integer, Integer>(new Integer(cols[0]), new Integer(cols[1]));
+                    return new Tuple2<Integer, Integer>(Integer.valueOf(cols[0]), Integer.valueOf(cols[1]));
                 });
     }
 
@@ -99,7 +147,7 @@ public class ViewingFigures {
         return sc.textFile("src/main/resources/viewing figures/views-*.csv")
                 .mapToPair(commaSeparatedLine -> {
                     String[] columns = commaSeparatedLine.split(",");
-                    return new Tuple2<Integer, Integer>(new Integer(columns[0]), new Integer(columns[1]));
+                    return new Tuple2<Integer, Integer>(Integer.valueOf(columns[0]), Integer.valueOf(columns[1]));
                 });
     }
 }
